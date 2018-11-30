@@ -13,18 +13,30 @@
 #define ROOT_INO 1
 #define INODE_PB (BLOCK_SIZE / sizeof(struct dinode))
 
+#define T_UNALLOC 0
+#define T_DIR 1
+#define T_FILE 2
+#define T_DEV 3
+
 // Data structure for on-disk block
 struct block {
 	char* data;
 };                 
 
 // Analysis prototypes
+int inodesInBitmapTest();
 
-// Basit utility prototypes
+// Basic utility prototypes
+int inodeInBitmap(struct dinode*);
+int useableType(int);
+int validInode(struct dinode*);
+int blockBit(int);
 void bread(int, struct block*);
 void init(char*);
 int inode2Block(int);
+void debugPrintByte(char);
 void debugDumpBlock(struct block, int);
+void int2Binary(int, char[8]);
 void cleanup();
 
 // File descriptor of file system
@@ -66,22 +78,130 @@ int main (int argc, char *argv[]){
 		}
 	}*/
 
-	int i;
+/*	int i;
 	for(i = 0; i < INODES[1].size / sizeof(struct dirent); i++){
 		struct dirent dir = ROOT_DIR[i];
 		printf("[%d] [%s]\n", dir.inum, dir.name);
 	}
+*/
+/*	uint* addr = INODES[1].addrs;
+	int j;
+	for(j = 0; j < 13; j++){
+		printf("[%u]\n", addr[j]);
+	}
+*/
+//	printf("[%u]\n", addr[0]);
+//	struct block b;
+//	b.data = BMAP;
 
-	uint* addr = INODES[1].addrs;
-	printf("[%u]\n", addr[0]);
+//	debugDumpBlock(b, 100);
 
-	struct block b;
-	b.data = BMAP;
+/*	int k;
+	for(k = 0; k < SUPER_BLOCK->ninodes; k++){
+		validInode(INODES[k]);
+	}
+*/
+	if(inodesInBitmapTest()){
+		printf("Success!\n");
+	} else {
+		printf("Error!\n");
+	}
 
-	debugDumpBlock(b, 100);
+//	int k = blockBit(408);
+//	printf("{%d}\n", k);
+
+//	debugPrintByte(BMAP[51]);
 
 	cleanup();
 	exit(0);
+}
+
+// ***
+// *
+// *   Analysis functions
+// *
+// ***
+
+// Returns 1 if for all in-use inodes, each block in use is also marked in-use by the
+// bitmap. Returns 0 if an inode is using a block which is not marked as in-use by the
+// bitmap.
+int inodesInBitmapTest(){
+	int i;
+	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		if(useableType(INODES[i].type)){
+			if(!inodeInBitmap(&INODES[i]))
+				return 0;
+		}
+	}
+	
+	return 1;
+}
+
+// ***
+// *
+// *   Utility functions
+// *
+// ***
+
+int inodeInBitmap(struct dinode* inode){
+	uint* refBlocks = inode->addrs;
+
+	int i;
+	for(i = 0; i < NDIRECT + 1; i++){
+		if(refBlocks[i] == 0)
+			continue;
+
+		if(refBlocks[i] < 2)
+			return 0;
+
+		if(refBlocks[i] > SUPER_BLOCK->nblocks - 1)
+			return 0;
+		
+		if(!blockBit(refBlocks[i]))
+			return 0;
+	}
+
+	return 1;
+}
+
+int useableType(int type){
+	int i;
+	for(i = 1; i < 4; i++){
+		if(type == i)
+			return 1;
+	}
+
+	return 0;
+}
+
+// Checks if the inode given to it is valid
+int validInode(struct dinode* inode){
+	if(!useableType(inode->type)){
+		if(inode->type == T_UNALLOC)
+			return 1;
+
+		return 0;
+	}
+	
+	return 1;
+}
+
+// Gets the bit from the bitmap at the given index
+int blockBit(int index){
+	if(index < 1 || index > SUPER_BLOCK->nblocks)
+		return 0;
+
+	int bit;
+	int byte = index / 8;
+	int bitPos = index % 8;
+	
+	char raw = BMAP[byte];
+	raw = raw >> bitPos;
+	raw = raw & 0x1;
+
+	bit = (int)raw;
+
+	return bit;
 }
 
 // Reads the block data at position index into a block structure
@@ -137,6 +257,14 @@ void init(char* fileName){
 // Returns the block which an inode at inodeIndex is located in
 int inode2Block(int inodeIndex){
 	return (inodeIndex / INODE_PB) + 2;
+}
+
+void debugPrintByte(char byte){
+	int i;
+	for(i = 0; i < 8; i++){
+		printf("%d", ((byte >> (7 - i)) & 0x1));
+	}
+	printf("\n");
 }
 
 // Dumps a block's data to the command line, with MAX to control 
