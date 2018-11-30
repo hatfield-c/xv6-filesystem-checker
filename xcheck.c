@@ -28,12 +28,15 @@ int inodesInBitmapTest();
 
 // Basic utility prototypes
 int inodeInBitmap(struct dinode*);
+int blockInUse(int);
 int useableType(int);
 int validInode(struct dinode*);
 int blockBit(int);
 void bread(int, struct block*);
 void init(char*);
 int inode2Block(int);
+
+// Debug prototypes
 void debugPrintByte(char);
 void debugDumpBlock(struct block, int);
 void int2Binary(int, char[8]);
@@ -126,14 +129,20 @@ int main (int argc, char *argv[]){
 // bitmap. Returns 0 if an inode is using a block which is not marked as in-use by the
 // bitmap.
 int inodesInBitmapTest(){
+	// Iterate through all the inodes
 	int i;
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// If the inode isn't usable, don't examine it
 		if(useableType(INODES[i].type)){
+			// If the inode's data blocks aren't marked as in-use by the bitmap, 
+			// return false
 			if(!inodeInBitmap(&INODES[i]))
 				return 0;
 		}
 	}
 	
+	// All inode data blocks are properly documented in the bitmap. This test
+	// has been passed, so return true
 	return 1;
 }
 
@@ -143,64 +152,96 @@ int inodesInBitmapTest(){
 // *
 // ***
 
+// Checks if the data blocks referenced by a given inode are set as
+// in-use within the bitmap
 int inodeInBitmap(struct dinode* inode){
+	// Lits of block indexes referenced by the inode
 	uint* refBlocks = inode->addrs;
 
+	// Check the directly linked data blocks within the inode
 	int i;
 	for(i = 0; i < NDIRECT + 1; i++){
+		// If the direct link hasn't been instantiated yet, check
+		// the next one
 		if(refBlocks[i] == 0)
 			continue;
-
-		if(refBlocks[i] < 2)
-			return 0;
-
-		if(refBlocks[i] > SUPER_BLOCK->nblocks - 1)
-			return 0;
 		
-		if(!blockBit(refBlocks[i]))
+		// If the current directly linked block isn't in use, but it's referenced
+		// by the inode, return false
+		if(!blockInUse(refBlocks[i]))
 			return 0;
 	}
 
+	// The blocks referenced by the inodes and the bitmap match up - return true;
 	return 1;
 }
 
+// Examines if the block at block index is marked as "in use" by the bitmap
+int blockInUse(int blockIndex){
+	// If we're trying to access an invalid block, return false
+	if(blockIndex < 0)
+		return 0;
+
+	if(blockIndex > SUPER_BLOCK->nblocks - 1)
+		return 0;
+	
+	// If the bit is '0' at the index, then the block is not in use
+	if(!blockBit(blockIndex))
+		return 0;
+
+	// Otherwise, assume the block is in use, and return true
+	return 1;
+}
+
+// Checks if the type supplied is usable in the application
+// xv6 file systems only support 3 explicit serial types, so we only
+// need to check within a range
 int useableType(int type){
-	int i;
-	for(i = 1; i < 4; i++){
-		if(type == i)
-			return 1;
-	}
+	if(type > 1 && type < 4)
+		return 1;
 
 	return 0;
 }
 
 // Checks if the inode given to it is valid
 int validInode(struct dinode* inode){
+	// If the type of the inode isn't recognized as immediately useable,
+	// examine it more
 	if(!useableType(inode->type)){
+		// If the inode is just unallocated, return true
 		if(inode->type == T_UNALLOC)
 			return 1;
 
+		// Otherwise, return false
 		return 0;
 	}
 	
+	// If the type is immediately useable, return true;
 	return 1;
 }
 
 // Gets the bit from the bitmap at the given index
 int blockBit(int index){
+	// If we the desired block index is unaccesible, return 0
 	if(index < 1 || index > SUPER_BLOCK->nblocks)
 		return 0;
 
+	// Bit we will return
 	int bit;
+
+	// Get the byte the bit is in
 	int byte = index / 8;
+
+	// Get the position within the byte the index references
 	int bitPos = index % 8;
 	
+	// Shift and mask the bits to get the one we want
 	char raw = BMAP[byte];
 	raw = raw >> bitPos;
 	raw = raw & 0x1;
 
+	// Convert and return our bit in a more useable state
 	bit = (int)raw;
-
 	return bit;
 }
 
@@ -259,6 +300,13 @@ int inode2Block(int inodeIndex){
 	return (inodeIndex / INODE_PB) + 2;
 }
 
+// ***
+// *
+// *   Debug Functions
+// *
+// ***
+
+// Prints the individuals bits of a byte to the console
 void debugPrintByte(char byte){
 	int i;
 	for(i = 0; i < 8; i++){
