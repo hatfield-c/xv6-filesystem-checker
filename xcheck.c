@@ -24,6 +24,7 @@ struct block {
 };                 
 
 // Analysis prototypes
+int bitmapInInodesTest();
 int inodesInBitmapTest();
 
 // Basic utility prototypes
@@ -44,6 +45,9 @@ void cleanup();
 
 // File descriptor of file system
 int FSFD;
+
+// Number of offset blocks to access the data block region
+int DATA_OFFSET;
 
 // The beginning address for the file system mapped into
 // the application
@@ -104,12 +108,14 @@ int main (int argc, char *argv[]){
 		validInode(INODES[k]);
 	}
 */
-	if(inodesInBitmapTest()){
-		printf("Success!\n");
-	} else {
-		printf("Error!\n");
+	if(!inodesInBitmapTest()){
+		printf("ERROR: address used by inode marked free in bitmap.\n");
 	}
-
+	
+	if(!bitmapInInodesTest()){
+		printf("ERROR: bitmap marks block in use but it is not in use.\n");
+	}
+	printf("%d\n", DATA_OFFSET);
 //	int k = blockBit(408);
 //	printf("{%d}\n", k);
 
@@ -125,6 +131,15 @@ int main (int argc, char *argv[]){
 // *
 // ***
 
+int bitmapInInodesTest(){
+	int i;
+	for(i = 0; i < SUPER_BLOCK->size; i++){
+
+	}
+
+	return 1;	
+}
+
 // Returns 1 if for all in-use inodes, each block in use is also marked in-use by the
 // bitmap. Returns 0 if an inode is using a block which is not marked as in-use by the
 // bitmap.
@@ -134,7 +149,7 @@ int inodesInBitmapTest(){
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
 		// If the inode isn't usable, don't examine it
 		if(useableType(INODES[i].type)){
-	//		printf("Inode: %d\n", i);
+			printf("Inode: %d\n", i);
 			// If the inode's data blocks aren't marked as in-use by the bitmap, 
 			// return false
 			if(!inodeInBitmap(&INODES[i]))
@@ -168,7 +183,7 @@ int inodeInBitmap(struct dinode* inode){
 		// the next one
 		if(bIndex == 0)
 			continue;
-		
+		printf("  [%d]\n", bIndex);		
 		// Block index is negative when it is writing
 		// sequential data from higher blocks to lower blocks.
 		// Realign the index to positive.
@@ -183,25 +198,29 @@ int inodeInBitmap(struct dinode* inode){
 
 	// Check indirectly linked data blocks referenced at the end, if they exist
 	if(refBlocks[NDIRECT] != 0){
-		// Read the block which stores in the indirect links
+		// Read the block which stores the indirect links
 		struct block b;
 		bread(refBlocks[NDIRECT], &b);
-
+		printf("     {%d}\n", refBlocks[NDIRECT]);
 		// Iterate through the list of blocks stored in the indirect block
-		char* indirect = b.data;
-		for(i = 0; i < BLOCK_SIZE; i++){
+		uint* indirect = (uint*)b.data;
+
+		int readLength = (inode->size - (NDIRECT * BLOCK_SIZE)) / BLOCK_SIZE;
+		printf("<%d>\n", readLength);
+		for(i = 0; i < readLength + 1; i++){
 			// Get the current block index from the indirect block
 			int bIndex = indirect[i];
-
+		printf("        (%d)\n", bIndex);
 			// Check if its used by the inode
 			if(bIndex == 0)
 				continue;
-
+			
+			//debugPrintByte(indirect[i]);
 			// Block index is negative when it is writing
 			// sequential data from higher blocks to lower blocks.	
 			// Realign the index to positive.                     		
-			if(bIndex < 0)
-				bIndex = bIndex * -1;
+			//if(bIndex < 0)
+			//	bIndex = bIndex * -1;
 		
 			// If the current indirectly linked blocked isn't in use in the bitmap, but its
 			// referenced by the inode, return flase
@@ -331,6 +350,9 @@ void init(char* fileName){
 	int bmBlock = inode2Block(SUPER_BLOCK->ninodes) + 1;
 	bread(bmBlock, &b);
 	BMAP = b.data;
+
+	// Get the offset for data blocks
+	DATA_OFFSET = bmBlock + 1;	
 }
 
 // Returns the block which an inode at inodeIndex is located in
