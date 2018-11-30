@@ -81,12 +81,12 @@ int main (int argc, char *argv[]){
 		}
 	}*/
 
-/*	int i;
+	int i;
 	for(i = 0; i < INODES[1].size / sizeof(struct dirent); i++){
 		struct dirent dir = ROOT_DIR[i];
 		printf("[%d] [%s]\n", dir.inum, dir.name);
 	}
-*/
+
 /*	uint* addr = INODES[1].addrs;
 	int j;
 	for(j = 0; j < 13; j++){
@@ -134,6 +134,7 @@ int inodesInBitmapTest(){
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
 		// If the inode isn't usable, don't examine it
 		if(useableType(INODES[i].type)){
+	//		printf("Inode: %d\n", i);
 			// If the inode's data blocks aren't marked as in-use by the bitmap, 
 			// return false
 			if(!inodeInBitmap(&INODES[i]))
@@ -158,18 +159,55 @@ int inodeInBitmap(struct dinode* inode){
 	// Lits of block indexes referenced by the inode
 	uint* refBlocks = inode->addrs;
 
-	// Check the directly linked data blocks within the inode
+	// Check the linked data blocks within the inode - all the directly linked blocks,
+	// and the single linked block at the end
 	int i;
 	for(i = 0; i < NDIRECT + 1; i++){
+		int bIndex = refBlocks[i];
 		// If the direct link hasn't been instantiated yet, check
 		// the next one
-		if(refBlocks[i] == 0)
+		if(bIndex == 0)
 			continue;
 		
-		// If the current directly linked block isn't in use, but it's referenced
+		// Block index is negative when it is writing
+		// sequential data from higher blocks to lower blocks.
+		// Realign the index to positive.
+		if(bIndex < 0)
+			bIndex = bIndex * -1;
+
+		// If the current directly linked block isn't in use in the bitmap, but it's referenced
 		// by the inode, return false
 		if(!blockInUse(refBlocks[i]))
 			return 0;
+	}
+
+	// Check indirectly linked data blocks referenced at the end, if they exist
+	if(refBlocks[NDIRECT] != 0){
+		// Read the block which stores in the indirect links
+		struct block b;
+		bread(refBlocks[NDIRECT], &b);
+
+		// Iterate through the list of blocks stored in the indirect block
+		char* indirect = b.data;
+		for(i = 0; i < BLOCK_SIZE; i++){
+			// Get the current block index from the indirect block
+			int bIndex = indirect[i];
+
+			// Check if its used by the inode
+			if(bIndex == 0)
+				continue;
+
+			// Block index is negative when it is writing
+			// sequential data from higher blocks to lower blocks.	
+			// Realign the index to positive.                     		
+			if(bIndex < 0)
+				bIndex = bIndex * -1;
+		
+			// If the current indirectly linked blocked isn't in use in the bitmap, but its
+			// referenced by the inode, return flase
+			if(!blockInUse(bIndex))
+				return 0;
+		}
 	}
 
 	// The blocks referenced by the inodes and the bitmap match up - return true;
