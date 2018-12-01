@@ -24,12 +24,16 @@ struct block {
 };                 
 
 // Analysis prototypes
+int inodesValidTest();
+int inodesAddressTest();
 int bitmapInInodesTest();
 int inodesInBitmapTest();
 
 // Basic utility prototypes
+int validAddresses(struct dinode*);
 int blockInInodes(int);
 int inodeInBitmap(struct dinode*);
+int readLength(int);
 int blockInUse(int);
 int useableType(int);
 int validInode(struct dinode*);
@@ -109,6 +113,14 @@ int main (int argc, char *argv[]){
 		validInode(INODES[k]);
 	}
 */
+	if(!inodesValidTest()){
+		printf("ERROR: bad inode\n");
+	}
+	
+	if(!inodesAddressTest()){
+		
+	}
+
 	if(!inodesInBitmapTest()){
 		printf("ERROR: address used by inode marked free in bitmap.\n");
 	}
@@ -132,6 +144,32 @@ int main (int argc, char *argv[]){
 // *
 // ***
 
+// Returns 1 if all inodes are valid. 0 otherwise.
+int inodesValidTest(){
+	int i;
+	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		if(!validInode(&INODES[i]))
+			return 0;
+	}
+
+	return 1;
+}
+
+int inodesAddressTest(){
+	int i;
+	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		if(useableType(INODES[i].type)){
+			if(!validAddresses(&INODES[i])){
+				return 0;
+			}
+		}
+	}
+
+	return 1;
+}
+
+// Returns 1 if all blocks in the bitmap marked as in-use are referred to by some inode.
+// If not, returns 0
 int bitmapInInodesTest(){
 	int i;
 	for(i = DATA_OFFSET + 1; i < SUPER_BLOCK->nblocks + DATA_OFFSET; i++){
@@ -172,6 +210,38 @@ int inodesInBitmapTest(){
 // *
 // ***
 
+int validAddresses(struct dinode* inode){
+	uint* refBlocks = inode->addrs;
+
+	int i;
+	for(i = 0; i < NDIRECT + 1; i++){
+		if(refBlocks[i] == 0)
+			continue;
+//		printf("[%u]\n", refBlocks[i]);
+		if(refBlocks[i] < DATA_OFFSET || refBlocks[i] > SUPER_BLOCK->nblocks){
+			printf("ERROR: bad direct address in inode.\n");
+			return 0;
+		}
+	}
+
+	if(refBlocks[NDIRECT] != 0){
+		struct block b;
+		bread(refBlocks[NDIRECT], &b);
+
+		uint* indirect = (uint*)b.data;
+		for(i = 0; i < readLength(inode->size); i++){
+//			printf("    {%u}\n", indirect[i]);
+
+			if(indirect[i] < DATA_OFFSET || indirect[i] > SUPER_BLOCK->nblocks){
+				printf("ERROR: bad indirect address in inode.\n");
+				return 0;
+			}
+		}
+	}
+
+	return 1;
+}
+
 int blockInInodes(int blockIndex){
 	int i;
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
@@ -191,8 +261,7 @@ int blockInInodes(int blockIndex){
 				bread(refBlocks[NDIRECT], &b);
 
 				uint* indirect = (uint*)b.data;
-				int readLength = (INODES[i].size - (BLOCK_SIZE * NDIRECT)) / BLOCK_SIZE + 1;
-				for(j = 0; j < readLength; j++){
+				for(j = 0; j < readLength(INODES[i].size); j++){
 					if(indirect[j] == blockIndex){
 						return 1;
 					}
@@ -225,7 +294,7 @@ int inodeInBitmap(struct dinode* inode){
 		// Realign the index to positive.
 		if(bIndex < 0)
 			bIndex = bIndex * -1;
-
+//printf("[%u]\n", bIndex);		
 		// If the current directly linked block isn't in use in the bitmap, but it's referenced
 		// by the inode, return false
 		if(!blockInUse(refBlocks[i]))
@@ -242,11 +311,10 @@ int inodeInBitmap(struct dinode* inode){
 		uint* indirect = (uint*)b.data;
 
 		// Figure out how many extra blocks were needed to store the file
-		int readLength = (inode->size - (NDIRECT * BLOCK_SIZE)) / BLOCK_SIZE;
-		for(i = 0; i < readLength + 1; i++){
+		for(i = 0; i < readLength(inode->size); i++){
 			// Get the current block index from the indirect block
 			int bIndex = indirect[i];
-			
+//			printf("     {%u}\n", bIndex);
 			// Check if its used by the inode
 			if(bIndex == 0)
 				continue;
@@ -260,6 +328,12 @@ int inodeInBitmap(struct dinode* inode){
 
 	// The blocks referenced by the inodes and the bitmap match up - return true;
 	return 1;
+}
+
+int readLength(int fileSize){
+	int readLength = (fileSize - (NDIRECT * BLOCK_SIZE)) / BLOCK_SIZE;
+	readLength += ((fileSize - (NDIRECT * BLOCK_SIZE)) % BLOCK_SIZE) == 0 ? 0 : 1;
+	return readLength;
 }
 
 // Examines if the block at block index is marked as "in use" by the bitmap
@@ -283,7 +357,7 @@ int blockInUse(int blockIndex){
 // xv6 file systems only support 3 explicit serial types, so we only
 // need to check within a range
 int useableType(int type){
-	if(type > 1 && type < 4)
+	if(type > 0 && type < 4)
 		return 1;
 
 	return 0;
