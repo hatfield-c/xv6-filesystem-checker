@@ -24,6 +24,7 @@ struct block {
 };                 
 
 // Analysis prototypes
+int directoryTest();
 int rootTest();
 int inodesValidTest();
 int inodesAddressTest();
@@ -31,6 +32,8 @@ int bitmapInInodesTest();
 int inodesInBitmapTest();
 
 // Basic utility prototypes
+int dirCheck(uint, uint);
+int validDirect(struct dinode*, uint);
 int validAddresses(struct dinode*);
 int blockInInodes(int);
 int inodeInBitmap(struct dinode*);
@@ -44,6 +47,7 @@ void init(char*);
 int inode2Block(int);
 
 // Debug prototypes
+void debugDumpDir(struct dinode*);
 void debugPrintByte(char);
 void debugDumpBlock(struct block, int);
 void int2Binary(int, char[8]);
@@ -91,11 +95,11 @@ int main (int argc, char *argv[]){
 		}
 	}*/
 
-	int i;
+	/*int i;
 	for(i = 0; i < INODES[1].size / sizeof(struct dirent); i++){
 		struct dirent dir = ROOT_DIR[i];
 		printf("[%d] [%s]\n", dir.inum, dir.name);
-	}
+	}*/
 
 /*	uint* addr = INODES[1].addrs;
 	int j;
@@ -114,6 +118,8 @@ int main (int argc, char *argv[]){
 		validInode(INODES[k]);
 	}
 */
+	debugDumpDir(&INODES[1]);
+
 	if(!inodesValidTest()){
 		printf("ERROR: bad inode\n");
 	}
@@ -124,6 +130,10 @@ int main (int argc, char *argv[]){
 
 	if(!rootTest()){
 		printf("ERROR: root directory does not exit.\n");
+	}
+
+	if(!directoryTest()){
+		printf("ERROR: directory not properly formatted.\n");
 	}
 
 	if(!inodesInBitmapTest()){
@@ -148,6 +158,19 @@ int main (int argc, char *argv[]){
 // *   Analysis functions
 // *
 // ***
+
+// Examines all directories, and determines that they are properly formatted
+int directoryTest(){
+	int i;
+	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		if(INODES[i].type == T_DIR){
+			if(!validDirect(&INODES[i], i))
+				return 0;
+		}
+	}
+
+	return 1;
+}
 
 // Examines the root directory, and returns 1 if it's data is correct. Return 0 otherwise.
 int rootTest(){
@@ -265,6 +288,31 @@ int inodesInBitmapTest(){
 // *   Utility functions
 // *
 // ***
+
+// Checks if the directory inode passed to it is properly defined
+int validDirect(struct dinode* inode, uint inum){
+	uint* refBlocks = inode->addrs;
+
+	if(refBlocks[0] == 0)
+		return 1;
+
+	struct block b;
+	bread(refBlocks[0], &b);
+
+	struct dirent* entry = (struct dirent*)b.data;
+	
+	if(strcmp(entry[0].name, ".") != 0)
+		return 0;
+	
+	if(strcmp(entry[1].name, "..") != 0)
+		return 0;
+	
+	if(entry[0].inum != inum)
+		return 0;
+
+	return 1;
+
+}
 
 // Checks if the addresses of the passed inode are valid.
 int validAddresses(struct dinode* inode){
@@ -549,6 +597,58 @@ int inode2Block(int inodeIndex){
 // *   Debug Functions
 // *
 // ***
+
+void debugDumpDir(struct dinode* inode){
+	uint* refBlocks = inode->addrs;
+
+	printf("----- DIR DATA -----\n");
+
+	int i, j, directReadLength, size = inode->size;
+
+	for(i = 0; i < NDIRECT + 1; i++){
+		if(refBlocks[i] == 0)
+			continue;
+		
+		struct block b;
+		bread(refBlocks[i], &b);
+		
+		struct dirent* dirData = (struct dirent*)b.data;
+
+		if(size / BLOCK_SIZE > 0){
+			directReadLength = BLOCK_SIZE / sizeof(struct dirent);
+			size -= BLOCK_SIZE;
+		} else{
+			directReadLength = size / sizeof(struct dirent);
+		}
+		
+		for(j = 0; j < directReadLength; j++){
+			if(dirData[j].inum == 0)
+				continue;
+
+			printf("%u - '%s'\n", dirData[j].inum, dirData[j].name);
+		}
+	}
+
+	if(refBlocks[NDIRECT] != 0){
+		struct block b;
+		bread(refBlocks[NDIRECT], &b);
+
+		uint* indirect = (uint*)b.data;
+
+		for(i = 0; i < readLength(inode->size) / sizeof(struct dirent); i++){
+			bread(indirect[i], &b);
+
+			struct dirent* dirData = (struct dirent*)b.data;
+
+			for(j = 0; j < BLOCK_SIZE; j++){
+				if(dirData[j].inum == 0)
+					continue;
+
+				printf("%u - '%s'\n", dirData[j].inum, dirData[j].name);
+			}
+		}
+	}
+}
 
 // Prints the individuals bits of a byte to the console
 void debugPrintByte(char byte){
