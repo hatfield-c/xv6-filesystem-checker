@@ -24,6 +24,7 @@ struct block {
 };                 
 
 // Analysis prototypes
+int rootTest();
 int inodesValidTest();
 int inodesAddressTest();
 int bitmapInInodesTest();
@@ -82,20 +83,20 @@ int main (int argc, char *argv[]){
 
 	printf("Super block: %u\n", SUPER_BLOCK->size);
 
-	/*int i, j;
+/*	int i, j;
 	for(i = 0, j=1; i < SUPER_BLOCK->ninodes; i++){
 		if(INODES[i].size != 0){
 			printf("Inode %d: %u\n", j, INODES[i].size);
 			j++;
 		}
 	}*/
-/*
+
 	int i;
 	for(i = 0; i < INODES[1].size / sizeof(struct dirent); i++){
 		struct dirent dir = ROOT_DIR[i];
 		printf("[%d] [%s]\n", dir.inum, dir.name);
 	}
-*/
+
 /*	uint* addr = INODES[1].addrs;
 	int j;
 	for(j = 0; j < 13; j++){
@@ -121,6 +122,10 @@ int main (int argc, char *argv[]){
 		
 	}
 
+	if(!rootTest()){
+		printf("ERROR: root directory does not exit.\n");
+	}
+
 	if(!inodesInBitmapTest()){
 		printf("ERROR: address used by inode marked free in bitmap.\n");
 	}
@@ -144,42 +149,93 @@ int main (int argc, char *argv[]){
 // *
 // ***
 
+// Examines the root directory, and returns 1 if it's data is correct. Return 0 otherwise.
+int rootTest(){
+	// / Realod the root inode based on expected data
+	struct dinode rootInode = INODES[ROOT_INO];
+
+	// Make sure the root inode is usable
+	if(!useableType(rootInode.type))
+		return 0;
+
+	// The root shouldn't be empty
+	if(rootInode.size == 0)
+		return 0;
+
+	// The root inode should only use valid addresses
+	if(!validAddresses(&rootInode))
+		return 0;
+
+	// The first address of the root inode shouldn't be empty
+	if(rootInode.addrs[0] == 0)
+		return 0;
+
+	// Reload the root directory entry from the disk
+	struct block b;
+	bread(rootInode.addrs[0], &b);
+	struct dirent* root = (struct dirent*)b.data;
+
+	// If the reloaded directory entry doesn't match out init directory entry, there is a problem
+	if(root[0].inum != ROOT_DIR[0].inum)
+		return 0;
+	
+	// The '..' entry in the root directory should be equal to our ROOT_INO number of '1'
+	if(root[1].inum != ROOT_INO)
+		return 0;
+
+	// Root has passed all tests.
+	return 1;
+}
+
 // Returns 1 if all inodes are valid. 0 otherwise.
 int inodesValidTest(){
+	// Iterates through all inodes, and checks if they are valid
 	int i;
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// If the inode isn't valid, return 0 for failure.
 		if(!validInode(&INODES[i]))
 			return 0;
 	}
 
+	// Success, all inodes are valid. Return 1
 	return 1;
 }
 
+// Returns 1 if all addresses referenced by useable inodes are valid. Returns 0 otherwise.
 int inodesAddressTest(){
+	// Iterates through all inodes, and checks if they have valid addresses
 	int i;
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// If the inode is useable, examine it further
 		if(useableType(INODES[i].type)){
+			// If the inode has invalid addresses, return 0
 			if(!validAddresses(&INODES[i])){
 				return 0;
 			}
 		}
 	}
 
+	// Success, so return 1
 	return 1;
 }
 
 // Returns 1 if all blocks in the bitmap marked as in-use are referred to by some inode.
 // If not, returns 0
 int bitmapInInodesTest(){
+	// Iterate through the bits in the bitmap, beginning from the data block offset, and continue
+	// for the number of data blocks there are
 	int i;
 	for(i = DATA_OFFSET + 1; i < SUPER_BLOCK->nblocks + DATA_OFFSET; i++){
+		// If the bit for this block is marked as active, examine it further
 		if(blockBit(i)){
+			// If this block isn't in an inode, return 0
 			if(!blockInInodes(i)){
 				return 0;
 			}
 		}
 	}
 
+	// Success, so return 1
 	return 1;	
 }
 
@@ -210,28 +266,35 @@ int inodesInBitmapTest(){
 // *
 // ***
 
+// Checks if the addresses of the passed inode are valid.
 int validAddresses(struct dinode* inode){
+	// Get the blocks pointed to by the inode
 	uint* refBlocks = inode->addrs;
 
+	// Iterate over the direct blocks
 	int i;
 	for(i = 0; i < NDIRECT + 1; i++){
+		// If the block is unallocated, don't worry about it
 		if(refBlocks[i] == 0)
 			continue;
-//		printf("[%u]\n", refBlocks[i]);
+		
+		// If the block address is out of range, throw an error
 		if(refBlocks[i] < DATA_OFFSET || refBlocks[i] > SUPER_BLOCK->nblocks){
 			printf("ERROR: bad direct address in inode.\n");
 			return 0;
 		}
 	}
 
+	// Check if the indirect address is utilized
 	if(refBlocks[NDIRECT] != 0){
+		// If so, read the indirect block
 		struct block b;
 		bread(refBlocks[NDIRECT], &b);
 
+		// Get the address from the indirect block, and iterate through them
 		uint* indirect = (uint*)b.data;
 		for(i = 0; i < readLength(inode->size); i++){
-//			printf("    {%u}\n", indirect[i]);
-
+			// If block addresses are out of range, throw an error
 			if(indirect[i] < DATA_OFFSET || indirect[i] > SUPER_BLOCK->nblocks){
 				printf("ERROR: bad indirect address in inode.\n");
 				return 0;
@@ -239,29 +302,40 @@ int validAddresses(struct dinode* inode){
 		}
 	}
 
+	// Otheriwse, the test has succeeded, so we return 1.
 	return 1;
 }
 
+// Checks if the blockIndex given is referenced by an inode somewhere
 int blockInInodes(int blockIndex){
+	// Iterate through the list of inodes
 	int i;
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// Only examine useable inodes
 		if(useableType(INODES[i].type)){
+			// Iterate through the direct addresses
 			uint* refBlocks = INODES[i].addrs;
 
 			int j;
 			for(j = 0; j < NDIRECT + 1; j++){
-
+				// If the blockIndex is referenced by a direct address,
+				// return success
 				if(refBlocks[j] == blockIndex){
 					return 1;
 				}
 			}
 
+			// Check if the indirect block is utilized
 			if(refBlocks[NDIRECT] != 0){
+				// If so, read the indirect block
 				struct block b;
 				bread(refBlocks[NDIRECT], &b);
 
+				// Iterate through the indirect block
 				uint* indirect = (uint*)b.data;
 				for(j = 0; j < readLength(INODES[i].size); j++){
+					// If the blockIndex is referenced by the indirect address,
+					// return success
 					if(indirect[j] == blockIndex){
 						return 1;
 					}
@@ -270,6 +344,8 @@ int blockInInodes(int blockIndex){
 		}
 	}
 
+	// We have found no matches for the blockIndex given within any inode.
+	// Return failure
 	return 0;
 }
 
@@ -294,7 +370,7 @@ int inodeInBitmap(struct dinode* inode){
 		// Realign the index to positive.
 		if(bIndex < 0)
 			bIndex = bIndex * -1;
-//printf("[%u]\n", bIndex);		
+		
 		// If the current directly linked block isn't in use in the bitmap, but it's referenced
 		// by the inode, return false
 		if(!blockInUse(refBlocks[i]))
@@ -314,7 +390,7 @@ int inodeInBitmap(struct dinode* inode){
 		for(i = 0; i < readLength(inode->size); i++){
 			// Get the current block index from the indirect block
 			int bIndex = indirect[i];
-//			printf("     {%u}\n", bIndex);
+			
 			// Check if its used by the inode
 			if(bIndex == 0)
 				continue;
@@ -330,8 +406,13 @@ int inodeInBitmap(struct dinode* inode){
 	return 1;
 }
 
+// Returns the number of reads to perform on an indirect block, based on the file size given
 int readLength(int fileSize){
+	// Subtract the number of used space for direct blocks from the total filesize,
+	// then divide by the total block size
 	int readLength = (fileSize - (NDIRECT * BLOCK_SIZE)) / BLOCK_SIZE;
+
+	// Account for off by one errors
 	readLength += ((fileSize - (NDIRECT * BLOCK_SIZE)) % BLOCK_SIZE) == 0 ? 0 : 1;
 	return readLength;
 }
