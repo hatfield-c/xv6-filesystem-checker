@@ -4,6 +4,7 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "types_defs.h"
 #include "fs_defs.h"
@@ -24,6 +25,8 @@ struct block {
 };                 
 
 // Analysis prototypes
+int indirectAddressTest();
+int directAddressTest();
 int directoryTest();
 int rootTest();
 int inodesValidTest();
@@ -32,6 +35,7 @@ int bitmapInInodesTest();
 int inodesInBitmapTest();
 
 // Basic utility prototypes
+int uniqueAddr(uint*, int);
 int dirCheck(uint, uint);
 int validDirect(struct dinode*, uint);
 int validAddresses(struct dinode*);
@@ -85,69 +89,55 @@ int main (int argc, char *argv[]){
 	// Initialize the file system in the application
 	init(argv[1]);
 
-	printf("Super block: %u\n", SUPER_BLOCK->size);
-
-/*	int i, j;
-	for(i = 0, j=1; i < SUPER_BLOCK->ninodes; i++){
-		if(INODES[i].size != 0){
-			printf("Inode %d: %u\n", j, INODES[i].size);
-			j++;
-		}
-	}*/
-
-	/*int i;
-	for(i = 0; i < INODES[1].size / sizeof(struct dirent); i++){
-		struct dirent dir = ROOT_DIR[i];
-		printf("[%d] [%s]\n", dir.inum, dir.name);
-	}*/
-
-/*	uint* addr = INODES[1].addrs;
-	int j;
-	for(j = 0; j < 13; j++){
-		printf("[%u]\n", addr[j]);
-	}
-*/
-//	printf("[%u]\n", addr[0]);
-//	struct block b;
-//	b.data = BMAP;
-
-//	debugDumpBlock(b, 100);
-
-/*	int k;
-	for(k = 0; k < SUPER_BLOCK->ninodes; k++){
-		validInode(INODES[k]);
-	}
-*/
+	// Debugging block
+	/*
+	printf("Should output 1024: %u\n", SUPER_BLOCK->size);
 	debugDumpDir(&INODES[1]);
+	debugPrintByte(BMAP[51]);
+	printf("%d\n", DATA_OFFSET);
+	*/
 
+	// Run tests
 	if(!inodesValidTest()){
 		printf("ERROR: bad inode\n");
+		exit(1);
 	}
 	
 	if(!inodesAddressTest()){
-		
+		exit(1);
 	}
 
 	if(!rootTest()){
 		printf("ERROR: root directory does not exit.\n");
+		exit(1);
 	}
 
 	if(!directoryTest()){
 		printf("ERROR: directory not properly formatted.\n");
+		exit(1);
 	}
 
 	if(!inodesInBitmapTest()){
 		printf("ERROR: address used by inode marked free in bitmap.\n");
+		exit(1);
 	}
 	
 	if(!bitmapInInodesTest()){
 		printf("ERROR: bitmap marks block in use but it is not in use.\n");
+		exit(1);
 	}
-	printf("%d\n", DATA_OFFSET);
-//	int k = blockBit(408);
-//	printf("{%d}\n", k);
 
-//	debugPrintByte(BMAP[51]);
+	if(!directAddressTest()){
+		printf("ERROR: direct address used more than once.\n");
+		exit(1);
+	}
+
+	if(!indirectAddressTest()){
+		printf("ERROR: indirect address used more than once.\n");
+		exit(1);
+	}
+
+	printf("Check complete!\n");
 
 	cleanup();
 	exit(0);
@@ -159,16 +149,69 @@ int main (int argc, char *argv[]){
 // *
 // ***
 
-// Examines all directories, and determines that they are properly formatted
-int directoryTest(){
+// Checks that all indirect addresses for in-use inodes are only referenced once within the redirect block of the inode.
+int indirectAddressTest(){
+	// Iterate through the inodes
 	int i;
 	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// If the inode is usable, examine it further
+		if(useableType(INODES[i].type)){
+			// Get the referenced blocks in the inode
+			uint* refBlocks = INODES[i].addrs;
+
+			// If the indirect block is unallocated, then don't worry about it
+			if(refBlocks[NDIRECT] == 0)
+				continue;
+
+			// Read the indirect block from the file system
+			struct block b;
+			bread(refBlocks[NDIRECT], &b);
+			uint* indirect = (uint*)b.data;
+
+			// If the indirect block has repeated addresses within it, then return false
+			if(!uniqueAddr(indirect, readLength(INODES[i].size))){
+				return 0;
+			}
+		}
+	}
+
+	// Otherwise, return 1
+	return 1;
+}
+
+// Checks that all direct addresses for in-use inodes are only referenced once by each inode.
+// Links to the same blocks by other inodes allowed, in the event of hard linking on the file system
+int directAddressTest(){
+	// Iterate through the inodes
+	int i;
+	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// If the inode is usable, examine it further
+		if(useableType(INODES[i].type)){
+			// If the inode has non-unique block references, return false.
+			uint* refBlocks = INODES[i].addrs;
+			if(!uniqueAddr(refBlocks, NDIRECT + 1))
+				return 0;
+		}
+	}
+
+	// No repeated block references detected - return true
+	return 1;
+}
+
+// Examines all directories, and determines that they are properly formatted
+int directoryTest(){
+	// Iterate through inodes
+	int i;
+	for(i = 0; i < SUPER_BLOCK->ninodes; i++){
+		// If the inode is a directory, examine it further
 		if(INODES[i].type == T_DIR){
+			// If not a valid directory, return false
 			if(!validDirect(&INODES[i], i))
 				return 0;
 		}
 	}
 
+	// All directories are valid - return true
 	return 1;
 }
 
@@ -289,27 +332,68 @@ int inodesInBitmapTest(){
 // *
 // ***
 
+// Checks if the address list of length len has only unique addresses present
+int uniqueAddr(uint* addr, int len){
+	int i, j;
+	uint cur;
+
+	// Iterate through the list
+	for(i = 0; i < len; i++){
+		// Get a value to examine
+		cur = addr[i];
+
+		// If this block is unallocated, don't worry about it
+		if(cur == 0)
+			continue;
+
+		// Check that the value we're examining doesn't appear in the list again
+		for(j = 0; j < len; j++){
+			// If we're looking at the same entry, or this entry is unallocated,
+			// don't worry about it
+			if(j == i || addr[j] == 0)
+				continue;
+
+			// We've detected a duplicate address - return false
+			if(cur == addr[j])
+				return 0;
+		}
+	}
+
+	// No duplicate addresses found - return true
+	return 1;
+}
+
 // Checks if the directory inode passed to it is properly defined
 int validDirect(struct dinode* inode, uint inum){
+	// Get the block addresses 
+	// We only need to examine the first block address
 	uint* refBlocks = inode->addrs;
 
+	// If the first address, is zero, it is unallocated, and
+	// thus technically valid
 	if(refBlocks[0] == 0)
 		return 1;
 
+	// Read the first address block
 	struct block b;
 	bread(refBlocks[0], &b);
 
+	// Get the directory data
 	struct dirent* entry = (struct dirent*)b.data;
 	
+	// Check the first entry refers to '.'
 	if(strcmp(entry[0].name, ".") != 0)
 		return 0;
 	
+	// Check the second entry refers to '..'
 	if(strcmp(entry[1].name, "..") != 0)
 		return 0;
 	
+	// Check that the first entry's inode refers to this inoude object
 	if(entry[0].inum != inum)
 		return 0;
 
+	// All tests passed. Return true.
 	return 1;
 
 }
@@ -547,14 +631,14 @@ void init(char* fileName){
 
 	// If there was an error, output a message and exit
 	if(FSFD < 0){
-		fprintf(stderr, "Error opening file system!\n");
+		fprintf(stderr, "ERROR: image not found\n");
 		exit(1);
 	}
 
 	// Get info on the file system
 	struct stat finfo;
 	if(fstat(FSFD, &finfo) < 0){
-		fprintf(stderr, "Error loading file system info!\n");
+		fprintf(stderr, "ERROR: could not load image statistics\n");
 		exit(1);
 	}
 
@@ -598,6 +682,8 @@ int inode2Block(int inodeIndex){
 // *
 // ***
 
+// Dumps a directory's data to the command line
+// Indirect addressing still buggy
 void debugDumpDir(struct dinode* inode){
 	uint* refBlocks = inode->addrs;
 
@@ -668,7 +754,6 @@ void debugDumpBlock(struct block b, int MAX){
 	}
 }
 
-// Cleanup the application
 void cleanup(){
 	//free(INODES);
 	//free(SUPER_BLOCK);
